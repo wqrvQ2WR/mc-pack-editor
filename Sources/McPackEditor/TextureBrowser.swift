@@ -31,6 +31,7 @@ struct TexEntry: Identifiable, Hashable {
     let rel: String
     let inPack: Bool
     let inVanilla: Bool
+    var ko: String? = nil       // 한국어 이름 (게임 언어 파일)
     var id: String { rel }
     var name: String { (rel as NSString).lastPathComponent.replacingOccurrences(of: ".png", with: "") }
     /// 카테고리 폴더 아래 하위 폴더 (예: entity의 "cat")
@@ -73,7 +74,7 @@ extension Workspace {
         let van = pngs(vanillaDir)
         let pack = pngs(packURL(base))
         let all = van.union(pack).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-        return (base, all.map { TexEntry(rel: $0, inPack: pack.contains($0), inVanilla: van.contains($0)) })
+        return (base, all.map { TexEntry(rel: $0, inPack: pack.contains($0), inVanilla: van.contains($0), ko: koNameForTexture($0)) })
     }
 
     /// 팩 파일이 바닐라와 다른지 (저장된 파일 기준, 복사만 해 놓고 안 고친 건 same)
@@ -167,6 +168,9 @@ struct TextureBrowserView: View {
     @State private var filter = 0          // 0 전체, 1 팩에 있는 것, 2 팩에 없는 것
     @AppStorage("thumbSize") private var size: Double = 56
     @State private var sub = ""            // 하위 폴더 거르기
+    @State private var topID: String?      // 지금 맨 위에 보이는 칸 (돌아왔을 때 이 자리로)
+    @State private var restoreID: String?
+    @State private var restoreTick = 0
 
     private var title: String {
         if category.hasPrefix("ns:") { return "\(category.dropFirst(3)) 네임스페이스" }
@@ -182,7 +186,7 @@ struct TextureBrowserView: View {
         return entries.filter { e in
             (filter == 0 || (filter == 1 && e.inPack) || (filter == 2 && !e.inPack)) &&
             (sub.isEmpty || e.sub(base) == sub || e.sub(base).hasPrefix(sub + "/")) &&
-            (q.isEmpty || e.rel.lowercased().contains(q))
+            (q.isEmpty || e.rel.lowercased().contains(q) || (e.ko?.lowercased().contains(q) ?? false))
         }
     }
 
@@ -190,7 +194,7 @@ struct TextureBrowserView: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Text(title).font(.title3.bold()).foregroundStyle(Theme.gradient)
-                TextField("이름 검색", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                TextField("이름 검색 (한국어·영어)", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 220)
                 Picker("", selection: $filter) {
                     Text("전체").tag(0); Text("팩에 있는 것").tag(1); Text("바닐라만").tag(2)
                 }
@@ -219,11 +223,17 @@ struct TextureBrowserView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 let list = shown
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: size + 24), spacing: 10)], spacing: 12) {
-                        ForEach(list) { e in cell(e) }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: size + 24), spacing: 10)], spacing: 12) {
+                            ForEach(list) { e in cell(e) }
+                        }
+                        .scrollTargetLayout()
+                        .padding(14)
                     }
-                    .padding(14)
+                    .scrollPosition(id: $topID, anchor: .top)
+                    .onAppear { restoreScroll(proxy) }
+                    .onChange(of: restoreTick) { restoreScroll(proxy) }
                 }
                 Divider()
                 HStack {
@@ -235,9 +245,10 @@ struct TextureBrowserView: View {
                 .padding(.horizontal, 14).padding(.vertical, 5)
             }
         }
-        .onAppear(perform: load)
+        .onAppear { restoreState(category); load() }
+        .onDisappear { saveState(category) }
         .onChange(of: ws.vanillaReady) { load() }
-        .onChange(of: category) { sub = ""; load() }
+        .onChange(of: category) { old, new in saveState(old); restoreState(new); load() }
     }
 
     private func cell(_ e: TexEntry) -> some View {
@@ -252,14 +263,14 @@ struct TextureBrowserView: View {
                                 .help(e.inVanilla ? "팩에서 바꿈" : "팩에만 있음(새 텍스처)")
                         }
                     }
-                Text(e.name).font(.system(size: 10)).lineLimit(1).truncationMode(.middle)
+                Text(e.ko ?? e.name).font(.system(size: 10)).lineLimit(1).truncationMode(.middle)
                     .frame(width: size + 20)
             }
             .padding(4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(e.rel.replacingOccurrences(of: "assets/minecraft/textures/", with: ""))
+        .help((e.ko.map { $0 + "\n" } ?? "") + e.rel.replacingOccurrences(of: "assets/minecraft/textures/", with: ""))
         .contextMenu {
             Button("그림판으로 열기") { ws.editAsset(e.rel) }
             if e.inPack, let u = ws.packURL(e.rel) {
@@ -271,14 +282,37 @@ struct TextureBrowserView: View {
         }
     }
 
+    private func saveState(_ cat: String) {
+        ws.pageState["tex:" + cat] = PageState(scrollID: topID, query: query, filter: filter, sub: sub)
+    }
+
+    private func restoreState(_ cat: String) {
+        let st = ws.pageState["tex:" + cat] ?? PageState()
+        query = st.query; filter = st.filter; sub = st.sub
+        topID = nil
+        restoreID = st.scrollID
+        if let c = ws.texCache[cat] { base = c.base; entries = c.entries; loading = false }
+    }
+
+    private func restoreScroll(_ proxy: ScrollViewProxy) {
+        guard let id = restoreID, !loading else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo(id, anchor: .top)
+            topID = id
+            restoreID = nil
+        }
+    }
+
     private func load() {
-        loading = true
+        if ws.texCache[category] == nil { loading = true } // 캐시가 있으면 그대로 보이면서 뒤에서 새로 읽음
         let cat = category
         DispatchQueue.global(qos: .userInitiated).async {
             let (b, e) = ws.textureEntries(cat)
             DispatchQueue.main.async {
+                ws.texCache[cat] = (b, e)
                 guard cat == category else { return }
                 base = b; entries = e; loading = false
+                restoreTick += 1 // 목록이 생긴 뒤 저장해 둔 자리로
             }
         }
     }
@@ -297,7 +331,7 @@ struct ChangesView: View {
     @State private var files: [ChangedFile] = []
     @State private var loading = true
     @State private var showSame = false
-    @State private var group = "all"
+    @State private var group = (Workspace.shared.pageState["changes"]?.group) ?? "all"
     @AppStorage("thumbSize") private var size: Double = 56
 
     var body: some View {
@@ -323,6 +357,7 @@ struct ChangesView: View {
             } else {
                 let list = filtered
                 let same = files.filter { $0.kind == .same }
+                ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         summary
@@ -352,6 +387,13 @@ struct ChangesView: View {
                         }
                     }
                     .padding(14)
+                }
+                .onAppear {
+                    // 돌아오면 마지막으로 누른 칸으로
+                    if let id = ws.pageState["changes"]?.scrollID {
+                        DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
+                    }
+                }
                 }
             }
         }
@@ -395,8 +437,12 @@ struct ChangesView: View {
         .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
     }
 
+    private func remember(_ rel: String) {
+        ws.pageState["changes"] = PageState(scrollID: rel, group: group)
+    }
+
     private func texCard(_ f: ChangedFile) -> some View {
-        Button { ws.editAsset(f.rel) } label: {
+        Button { remember(f.rel); ws.editAsset(f.rel) } label: {
             VStack(spacing: 6) {
                 HStack(spacing: 6) {
                     if f.kind != .added {
@@ -429,7 +475,7 @@ struct ChangesView: View {
     }
 
     private func fileRow(_ f: ChangedFile) -> some View {
-        Button { ws.selection = ws.packURL(f.rel)?.path } label: {
+        Button { remember(f.rel); ws.selection = ws.packURL(f.rel)?.path } label: {
             HStack {
                 Image(systemName: f.kind == .added ? "plus.circle.fill" : f.kind == .same ? "equal.circle" : "pencil.circle.fill")
                     .foregroundStyle(f.kind == .same ? AnyShapeStyle(.secondary) : AnyShapeStyle(Theme.gradient))
@@ -448,7 +494,7 @@ struct ChangesView: View {
 
     private func load() {
         guard let root = ws.root else { return }
-        loading = true
+        if let c = ws.changesCache { files = c; loading = false } else { loading = true }
         DispatchQueue.global(qos: .userInitiated).async {
             var out: [ChangedFile] = []
             let a = root.appendingPathComponent("assets")
@@ -460,7 +506,7 @@ struct ChangesView: View {
                 }
             }
             out.sort { $0.rel.localizedStandardCompare($1.rel) == .orderedAscending }
-            DispatchQueue.main.async { files = out; loading = false }
+            DispatchQueue.main.async { files = out; loading = false; ws.changesCache = out }
         }
     }
 

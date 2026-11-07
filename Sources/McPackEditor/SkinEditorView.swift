@@ -60,7 +60,7 @@ struct SkinEditorView: View {
     @ObservedObject var doc: ImageDoc
     @EnvironmentObject var ws: Workspace
     @State private var mode = 0
-    @State private var brush = BrushSettings()
+    @State private var brush = BrushSettings.saved()
     @State private var slim: Bool
     @State private var showOverlay = true
     @State private var paintOverlay = false

@@ -3,12 +3,33 @@ import SceneKit
 import SwiftUI
 
 /// 3D 화면에서 쓰는 붓 설정 (그림판과 같은 동작)
-struct BrushSettings {
+struct BrushSettings: Equatable {
     var tool: Tool = .pencil
     var color = RGBA(r: 240, g: 70, b: 140, a: 255)
     var size = 1
     var blend = false
     var alphaLock = false
+
+    /// 그림판·3D 칠하기가 같이 쓰는 마지막 붓 설정 (파일을 바꾸거나 앱을 다시 켜도 그대로)
+    static func saved() -> BrushSettings {
+        let d = UserDefaults.standard
+        var b = BrushSettings()
+        if let t = d.string(forKey: "paint.tool").flatMap(Tool.init(rawValue:)), t.isPaint { b.tool = t }
+        if let c = d.string(forKey: "paint.rgba").flatMap(RGBA.init(hex:)) { b.color = c }
+        if d.object(forKey: "paint.size") != nil { b.size = max(1, d.integer(forKey: "paint.size")) }
+        b.blend = d.bool(forKey: "paint.blend")
+        b.alphaLock = d.bool(forKey: "paint.alphaLock")
+        return b
+    }
+
+    func save() {
+        let d = UserDefaults.standard
+        d.set(tool.rawValue, forKey: "paint.tool")
+        d.set(color.hex, forKey: "paint.rgba")
+        d.set(size, forKey: "paint.size")
+        d.set(blend, forKey: "paint.blend")
+        d.set(alphaLock, forKey: "paint.alphaLock")
+    }
 
     /// 문서에 한 점(또는 이전 점부터 선) 칠하기. 스포이드면 색을 돌려준다.
     func apply(_ doc: ImageDoc, _ p: (Int, Int), from last: (Int, Int)?) -> RGBA? {
@@ -20,6 +41,8 @@ struct BrushSettings {
             if last == nil { doc.checkpoint(); doc.flood(p.0, p.1, color: color) }
         case .picker:
             return doc.pick(p.0, p.1)
+        default:
+            break
         }
         return nil
     }
@@ -34,7 +57,7 @@ struct BrushBar: View {
     var body: some View {
         HStack(spacing: 8) {
             Picker("", selection: $brush.tool) {
-                ForEach(Tool.allCases) { t in Image(systemName: t.symbol).help(t.rawValue).tag(t) }
+                ForEach(Tool.paintTools) { t in Image(systemName: t.symbol).help(t.rawValue).tag(t) }
             }
             .pickerStyle(.segmented).labelsHidden().frame(width: 140)
             ColorPicker("", selection: $color, supportsOpacity: false).labelsHidden()
@@ -50,6 +73,7 @@ struct BrushBar: View {
         .lineLimit(1)
         .onAppear { load() }
         .onChange(of: brush.color) { load() }
+        .onChange(of: brush) { brush.save() }
     }
 
     private func sync() {

@@ -15,7 +15,7 @@ struct ModelEditorView: View {
     @State private var selected: Int?
     @State private var selectedFace = "north"
     @State private var paint = false
-    @State private var brush = BrushSettings()
+    @State private var brush = BrushSettings.saved()
     @State private var dark = false
     @State private var slot: String?        // nil = 모델 그대로
     @State private var info = ""

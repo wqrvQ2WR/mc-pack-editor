@@ -20,7 +20,36 @@ final class Workspace: ObservableObject {
 
     @Published var root: URL?
     @Published var nodes: [Node] = []
-    @Published var selection: String?
+    /// 지금 보는 페이지(파일 경로, "tex:block", "mock:title", "changes" …). 바뀔 때마다 이전 페이지를 뒤로가기 기록에 쌓는다.
+    @Published var selection: String? {
+        didSet {
+            guard !goingBack, oldValue != selection, let old = oldValue else { return }
+            backStack.append(old)
+            if backStack.count > 60 { backStack.removeFirst() }
+        }
+    }
+    @Published private(set) var backStack: [String] = []
+    private var goingBack = false
+
+    /// 목록 페이지가 떠날 때 남겨 두는 상태 (스크롤 위치·검색어·필터)
+    var pageState: [String: PageState] = [:]
+    /// 텍스처 목록 캐시 (다시 와도 바로 보이게)
+    var texCache: [String: (base: String, entries: [TexEntry])] = [:]
+    var changesCache: [ChangedFile]?
+    var creativeCache: [String: [CreativeTab]] = [:]
+
+    func goBack() {
+        // 지워졌거나 없는 파일 페이지는 건너뛴다
+        while let prev = backStack.popLast() {
+            if prev.hasPrefix("/") && !FileManager.default.fileExists(atPath: prev) { continue }
+            goingBack = true
+            selection = prev
+            goingBack = false
+            return
+        }
+    }
+
+    func clearHistory() { backStack.removeAll() }
     @Published var query = ""
     @Published var status = "폴더를 열어 주세요"
     @Published var searchResults: [Node] = []
@@ -279,6 +308,7 @@ final class Workspace: ObservableObject {
             }
         }
         root = nil; nodes = []; selection = nil; lastMock = nil
+        clearHistory(); pageState.removeAll(); texCache.removeAll()
         imageDocs.removeAll(); textDocs.removeAll(); langDocs.removeAll(); modelDocs.removeAll()
         UserDefaults.standard.removeObject(forKey: "lastRoot")
     }
@@ -287,6 +317,7 @@ final class Workspace: ObservableObject {
         root = url
         imageDocs.removeAll(); textDocs.removeAll(); langDocs.removeAll(); modelDocs.removeAll()
         selection = nil
+        clearHistory(); pageState.removeAll(); texCache.removeAll(); changesCache = nil
         reload()
         UserDefaults.standard.set(url.path, forKey: "lastRoot")
         prepareVanilla()
@@ -522,4 +553,13 @@ final class TextDoc: ObservableObject {
             return true
         } catch { return false }
     }
+}
+
+
+struct PageState {
+    var scrollID: String?
+    var query = ""
+    var filter = 0
+    var sub = ""
+    var group = "all"
 }

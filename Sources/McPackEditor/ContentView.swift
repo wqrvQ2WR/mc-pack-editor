@@ -130,9 +130,11 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItem(placement: .navigation) {
-                if let back = ws.lastMock, ws.selectedURL != nil {
-                    Button { ws.selection = back } label: { Label(backLabel(back) + "(으)로", systemImage: "chevron.backward") }
-                        .help("보던 목록으로 돌아가기")
+                if let back = ws.backStack.last {
+                    Button { ws.goBack() } label: { Label(backLabel(back), systemImage: "chevron.backward") }
+                        .labelStyle(.titleAndIcon)
+                        .help("이전 페이지로 (Cmd+[)")
+                        .keyboardShortcut("[", modifiers: .command)
                 }
             }
             ToolbarItemGroup {
@@ -149,6 +151,17 @@ struct ContentView: View {
         .navigationTitle(ws.root?.lastPathComponent ?? "")
         .onAppear {
             // 목록이 처음 그려지며 선택을 비우므로 조금 뒤에 고른다
+            // 검증용: MCPE_BACKTEST="<처음 스크롤할 텍스처 rel>|<열 파일 rel>" → 목록 스크롤 → 파일 열기 → 뒤로가기
+            if let t = ProcessInfo.processInfo.environment["MCPE_BACKTEST"]?.split(separator: "|").map(String.init), t.count == 2,
+               let root = ws.root {
+                ws.pageState["tex:block"] = PageState(scrollID: t[0])
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { ws.selection = "tex:block" }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { ws.selection = root.appendingPathComponent(t[1]).path }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 7) { ws.goBack() }
+            }
+            if let q = ProcessInfo.processInfo.environment["MCPE_QUERY"], let p = ws.pendingSelection { // 검증용 검색어
+                ws.pageState[p] = PageState(query: q)
+            }
             if let p = ws.pendingSelection {
                 ws.pendingSelection = nil
                 for t in [0.3, 1.0, 2.0] { // 목록이 늦게 그려질 때도 남도록 몇 번 더
@@ -176,7 +189,12 @@ struct ContentView: View {
                     Section("팩") {
                         Label("바꾼 것 미리보기", systemImage: "sparkles.rectangle.stack").tag("changes")
                     }
-                    Section("텍스처") {
+                    Section("크리에이티브 탭") {
+                        ForEach(CreativeTabs.order, id: \.self) { k in
+                            Label(ws.mockText(k), systemImage: CreativeTabs.icons[k] ?? "square.grid.2x2").tag("ctab:" + k)
+                        }
+                    }
+                    Section("텍스처 폴더") {
                         ForEach(TexCategory.all) { c in Label(c.label, systemImage: c.icon).tag("tex:" + c.id) }
                         ForEach(ws.packNamespaces(), id: \.self) { ns in
                             Label(ns + " (팩 전용)", systemImage: "shippingbox.fill").tag("tex:ns:" + ns)
@@ -235,6 +253,8 @@ struct ContentView: View {
     @ViewBuilder private var detail: some View {
         if ws.selection == "changes" {
             ChangesView().onAppear { ws.lastMock = "changes" }
+        } else if let s = ws.selection, s.hasPrefix("ctab:") {
+            CreativeTabView(key: String(s.dropFirst(5))).onAppear { ws.lastMock = s }
         } else if let s = ws.selection, s.hasPrefix("tex:") {
             TextureBrowserView(category: String(s.dropFirst(4))).onAppear { ws.lastMock = s }
         } else if let m = ws.selectedMock {
@@ -279,7 +299,9 @@ struct ContentView: View {
     }
 
     private func backLabel(_ s: String) -> String {
+        if s.hasPrefix("/") { return URL(fileURLWithPath: s).lastPathComponent }
         if s == "changes" { return "바꾼 것" }
+        if s.hasPrefix("ctab:") { return ws.mockText(String(s.dropFirst(5))) }
         if s.hasPrefix("tex:ns:") { return String(s.dropFirst(7)) }
         if s.hasPrefix("tex:") { return TexCategory.all.first { $0.id == String(s.dropFirst(4)) }?.label ?? "텍스처" }
         if let k = MockKind(rawValue: String(s.dropFirst(5))) { return k.label }

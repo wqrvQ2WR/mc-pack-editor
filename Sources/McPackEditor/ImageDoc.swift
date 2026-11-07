@@ -6,25 +6,45 @@ enum Tool: String, CaseIterable, Identifiable {
     case eraser = "지우개"
     case fill = "채우기"
     case picker = "스포이드"
+    case select = "사각 선택"
+    case wand = "마술봉"
+    case move = "이동"
     var id: String { rawValue }
+    /// 칠하는 도구 (3D 화면 붓에서 쓰는 것)
+    static let paintTools: [Tool] = [.pencil, .eraser, .fill, .picker]
+    var isPaint: Bool { Tool.paintTools.contains(self) }
     var symbol: String {
         switch self {
         case .pencil: return "pencil"
         case .eraser: return "eraser"
         case .fill: return "drop.fill"
         case .picker: return "eyedropper"
+        case .select: return "rectangle.dashed"
+        case .wand: return "wand.and.rays"
+        case .move: return "arrow.up.and.down.and.arrow.left.and.right"
         }
     }
 }
 
 struct RGBA: Equatable {
     var r: UInt8, g: UInt8, b: UInt8, a: UInt8
+
+    var hex: String { String(format: "%02X%02X%02X%02X", r, g, b, a) }
+    init(r: UInt8, g: UInt8, b: UInt8, a: UInt8) { self.r = r; self.g = g; self.b = b; self.a = a }
+    init?(hex: String) {
+        guard hex.count == 8, let n = UInt32(hex, radix: 16) else { return nil }
+        r = UInt8(n >> 24 & 255); g = UInt8(n >> 16 & 255); b = UInt8(n >> 8 & 255); a = UInt8(n & 255)
+    }
 }
 
 final class ImageDoc: ObservableObject {
     let url: URL
     @Published var image: PixelImage
     @Published var dirty = false
+    /// 선택 영역 (nil = 선택 없음 = 어디든 칠함). 크기는 w*h
+    @Published var selection: [Bool]?
+    /// 붙여넣었거나 이동 중인, 아직 그림에 안 박힌 조각
+    @Published var floating: Floating?
     private var undoStack: [PixelImage] = []
     private var redoStack: [PixelImage] = []
     private var saved: PixelImage
@@ -36,6 +56,7 @@ final class ImageDoc: ObservableObject {
     }
 
     var canUndo: Bool { !undoStack.isEmpty }
+    func markDirty() { dirty = image != saved }
     var canRedo: Bool { !redoStack.isEmpty }
 
     func checkpoint() {
@@ -60,6 +81,7 @@ final class ImageDoc: ObservableObject {
 
     func replace(with img: PixelImage) {
         checkpoint()
+        if img.w != image.w || img.h != image.h { selection = nil; floating = nil } // 크기가 바뀌면 선택은 버림
         image = img
         dirty = image != saved
     }
@@ -82,6 +104,7 @@ final class ImageDoc: ObservableObject {
             for dx in 0..<size {
                 let px = x + start + dx, py = y + start + dy
                 guard img.inside(px, py) else { continue }
+                if let sel = selection, sel.count == img.w * img.h, !sel[py * img.w + px] { continue } // 선택 밖은 안 칠함
                 let i = img.index(px, py)
                 switch tool {
                 case .eraser:
@@ -149,6 +172,7 @@ final class ImageDoc: ObservableObject {
         while let (cx, cy) = stack.popLast() {
             guard img.inside(cx, cy), !seen[cy * img.w + cx] else { continue }
             seen[cy * img.w + cx] = true
+            if let sel = selection, sel.count == img.w * img.h, !sel[cy * img.w + cx] { continue } // 선택이 벽
             let i = img.index(cx, cy)
             guard same(at(i)) else { continue }
             img.px[i] = color.r; img.px[i + 1] = color.g; img.px[i + 2] = color.b; img.px[i + 3] = color.a

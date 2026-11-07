@@ -486,7 +486,7 @@ struct ItemPreviewScene: NSViewRepresentable {
 
 struct ItemPickerView: View {
     @EnvironmentObject var ws: Workspace
-    @State private var query = ""
+    @State private var query = Workspace.shared.pageState["mock:items"]?.query ?? ""
 
     private var names: [String] {
         var set = Set<String>()
@@ -499,7 +499,7 @@ struct ItemPickerView: View {
             for f in (try? fm.contentsOfDirectory(atPath: d.path)) ?? [] where f.hasSuffix(".json") { set.insert(String(f.dropLast(5))) }
         }
         let q = query.lowercased().trimmingCharacters(in: .whitespaces)
-        return set.filter { q.isEmpty || $0.contains(q) }.sorted()
+        return set.filter { q.isEmpty || $0.contains(q) || (ws.koName($0)?.lowercased().contains(q) ?? false) }.sorted()
     }
 
     var body: some View {
@@ -507,17 +507,24 @@ struct ItemPickerView: View {
             Text("아이템 상황별 모델").font(.title2.bold()).foregroundStyle(Theme.gradient)
             Text("손에 들 때·인벤토리·머리 등 상황마다 다른 모델을 보여주게 정해요 (items/*.json). 누르면 팩으로 복사해서 열어요.")
                 .foregroundStyle(.secondary)
-            TextField("아이템 이름 검색 (예: sword, bow)", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 360)
+            TextField("아이템 이름 검색 (예: 검, bow)", text: $query).textFieldStyle(.roundedBorder).frame(maxWidth: 360)
             let list = names
             Text("\(list.count)개").font(.caption).foregroundStyle(.secondary)
+            ScrollViewReader { proxy in
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 8)], alignment: .leading, spacing: 8) {
                     ForEach(list.prefix(400), id: \.self) { n in
                         let rel = "assets/minecraft/items/\(n).json"
-                        Button { ws.editAsset(rel) } label: {
+                        Button {
+                            ws.pageState["mock:items"] = PageState(scrollID: n, query: query) // 돌아오면 이 칸으로
+                            ws.editAsset(rel)
+                        } label: {
                             HStack(spacing: 8) {
                                 icon(n)
-                                Text(n).font(.system(size: 12, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text(ws.koName(n) ?? n).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                                    Text(n).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                }
                                 Spacer(minLength: 0)
                                 if ws.inPack(rel) { Circle().fill(Theme.gradient).frame(width: 7, height: 7).help("팩에 있음") }
                             }
@@ -527,6 +534,12 @@ struct ItemPickerView: View {
                         .buttonStyle(.plain)
                     }
                 }
+            }
+            .onAppear {
+                if let id = ws.pageState["mock:items"]?.scrollID {
+                    DispatchQueue.main.async { proxy.scrollTo(id, anchor: .center) }
+                }
+            }
             }
         }
         .padding(20)

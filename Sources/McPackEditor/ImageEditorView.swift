@@ -6,28 +6,40 @@ struct ImageEditorView: View {
     @ObservedObject var doc: ImageDoc
     @EnvironmentObject var ws: Workspace
 
-    @State private var tool: Tool = .pencil
+    // 도구·붓은 파일을 바꿔도 이어지게 저장 (3D 칠하기와 같은 키)
+    @AppStorage("paint.tool") private var tool: Tool = .pencil
     @State private var color: Color = Color(red: 0.95, green: 0.25, blue: 0.55)
     @State private var opacity: Double = 100
-    @State private var brush: Int = 1
-    @State private var blend = false
-    @State private var alphaLock = false
+    @AppStorage("paint.size") private var brush: Int = 1
+    @AppStorage("paint.blend") private var blend = false
+    @AppStorage("paint.alphaLock") private var alphaLock = false
+    @AppStorage("paint.grid") private var grid = true
+    @AppStorage("paint.bg") private var bg: Int = 0
+    @AppStorage("paint.fit") private var fit: PixelImage.Fit = .original
     @State private var zoom: CGFloat = 0
-    @State private var grid = true
-    @State private var bg: Int = 0
     @State private var hover: (Int, Int)?
     @State private var last: (Int, Int)?
-    @State private var fit: PixelImage.Fit = .contain
     @State private var smooth = false
     @State private var dropTarget = false
     @State private var avail = CGSize(width: 560, height: 560)
     @State private var showAdjust = false
+    @State private var dragStart: (Int, Int)?
+    @State private var dragNow: (Int, Int)?
+    @State private var moveOrigin: (Int, Int)?     // 이동 시작 때 조각 위치
+    @State private var wandTolerance: Double = 0
+    @State private var wandContiguous = true
 
     private var effectiveZoom: CGFloat {
         if zoom > 0 { return zoom }
         let fw = (avail.width - 80) / CGFloat(doc.image.w)
         let fh = (avail.height - 80) / CGFloat(doc.image.h)
         return max(1, min(48, min(fw, fh).rounded(.down)))
+    }
+
+    private func loadColor() {
+        guard let c = UserDefaults.standard.string(forKey: "paint.rgba").flatMap(RGBA.init(hex:)) else { return }
+        color = Color(.sRGB, red: Double(c.r) / 255, green: Double(c.g) / 255, blue: Double(c.b) / 255)
+        opacity = (Double(c.a) / 255 * 100).rounded()
     }
 
     private var rgba: RGBA {
@@ -71,6 +83,20 @@ struct ImageEditorView: View {
             statusLine
         }
         .sheet(isPresented: $showAdjust) { ColorAdjustSheet(doc: doc) }
+        .background(shortcuts)
+        .onAppear { loadColor() }
+        .onChange(of: rgba) { UserDefaults.standard.set(rgba.hex, forKey: "paint.rgba") }
+        .onAppear {
+            // 검증용: MCPE_SELRECT="x0,y0,x1,y1" 선택, MCPE_FLOAT=dx,dy 떼어서 옮김
+            let env = ProcessInfo.processInfo.environment
+            if let r = env["MCPE_SELRECT"]?.split(separator: ",").compactMap({ Int($0) }), r.count == 4 {
+                doc.selectRect(r[0], r[1], r[2], r[3])
+                if let m = env["MCPE_FLOAT"]?.split(separator: ",").compactMap({ Int($0) }), m.count == 2 {
+                    doc.lift(); if let f = doc.floating { doc.moveFloating(to: f.x + m[0], f.y + m[1]) }
+                    tool = .move
+                }
+            }
+        }
     }
 
     // MARK: 상단 도구줄
@@ -83,12 +109,13 @@ struct ImageEditorView: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(width: 150)
+            .frame(width: 250)
             .labelsHidden()
-            Text(tool.rawValue).font(.callout.bold()).foregroundStyle(Theme.gradient).frame(width: 52, alignment: .leading)
+            .onChange(of: tool) { if tool.isPaint { doc.commitFloating() } }
+            Text(tool.rawValue).font(.callout.bold()).foregroundStyle(Theme.gradient).frame(width: 62, alignment: .leading)
 
             Divider().frame(height: 20)
-            Button { doc.undo() } label: { Image(systemName: "arrow.uturn.backward") }
+            Button { if doc.floating != nil { doc.cancelFloating() } else { doc.undo() } } label: { Image(systemName: "arrow.uturn.backward") }
                 .keyboardShortcut("z", modifiers: .command)
                 .disabled(!doc.canUndo).help("실행취소 (Cmd+Z)")
             Button { doc.redo() } label: { Image(systemName: "arrow.uturn.forward") }
@@ -125,15 +152,17 @@ struct ImageEditorView: View {
         let w = CGFloat(doc.image.w) * z, h = CGFloat(doc.image.h) * z
         return ZStack(alignment: .topLeading) {
             background(w: w, h: h, z: z)
-            if let cg = doc.image.cgImage() {
+            if let cg = (doc.floating == nil ? doc.image : doc.composite()).cgImage() {
                 Image(decorative: cg, scale: 1)
                     .interpolation(.none)
                     .resizable()
                     .frame(width: w, height: h)
             }
             if grid && z >= 6 { gridOverlay(z: z) }
+            selectionOverlay(z: z, w: w, h: h)
             if let (hx, hy) = hover {
                 let s = CGFloat(tool == .pencil || tool == .eraser ? brush : 1)
+                if tool.isPaint || tool == .wand {
                 let off = CGFloat(-(Int(s) - 1) / 2)
                 Rectangle()
                     .strokeBorder(Color.white, lineWidth: 1)
@@ -141,6 +170,7 @@ struct ImageEditorView: View {
                     .frame(width: s * z, height: s * z)
                     .offset(x: (CGFloat(hx) + off) * z, y: (CGFloat(hy) + off) * z)
                     .allowsHitTesting(false)
+                }
             }
         }
         .frame(width: w, height: h)
@@ -159,7 +189,7 @@ struct ImageEditorView: View {
                     hover = p
                     stroke(p, first: last == nil)
                 }
-                .onEnded { _ in last = nil }
+                .onEnded { _ in endStroke() }
         )
     }
 
@@ -198,14 +228,48 @@ struct ImageEditorView: View {
         .allowsHitTesting(false)
     }
 
+    private var selectMode: SelectMode {
+        let f = NSEvent.modifierFlags
+        if f.contains(.shift) { return .add }
+        if f.contains(.option) { return .subtract }
+        return .replace
+    }
+
+    private func endStroke() {
+        if tool == .select, let a = dragStart, let b = dragNow {
+            if a == b && selectMode == .replace { doc.deselect() } // 그냥 누르면 선택 해제
+            else { doc.selectRect(a.0, a.1, b.0, b.1, mode: selectMode) }
+        }
+        dragStart = nil; dragNow = nil; moveOrigin = nil; last = nil
+    }
+
     private func stroke(_ p: (Int, Int), first: Bool) {
         switch tool {
+        case .select:
+            if first { doc.commitFloating(); dragStart = p }
+            dragNow = (min(max(p.0, 0), doc.w - 1), min(max(p.1, 0), doc.h - 1))
+            last = p
+        case .wand:
+            guard first else { return }
+            doc.commitFloating()
+            doc.selectWand(p.0, p.1, tolerance: Int(wandTolerance), contiguous: wandContiguous, mode: selectMode)
+            last = p
+        case .move:
+            if first {
+                if doc.floating == nil { doc.lift() }
+                dragStart = p
+                if let f = doc.floating { moveOrigin = (f.x, f.y) }
+            }
+            if let s = dragStart, let o = moveOrigin { doc.moveFloating(to: o.0 + p.0 - s.0, o.1 + p.1 - s.1) }
+            last = p
         case .pencil, .eraser:
+            if first { doc.commitFloating() }
             if first { doc.checkpoint() }
             doc.line(from: last ?? p, to: p, tool: tool, color: rgba, size: brush, blend: blend, alphaLock: alphaLock)
             last = p
         case .fill:
             guard first else { return }
+            doc.commitFloating()
             doc.checkpoint()
             doc.flood(p.0, p.1, color: rgba)
             last = p
@@ -216,6 +280,120 @@ struct ImageEditorView: View {
             }
             last = p
         }
+    }
+
+    // MARK: 선택
+
+    /// 선택 테두리(개미 행진) + 드래그 중 사각형
+    @ViewBuilder private func selectionOverlay(z: CGFloat, w: CGFloat, h: CGFloat) -> some View {
+        if let a = dragStart, let b = dragNow, tool == .select {
+            let x0 = CGFloat(min(a.0, b.0)), y0 = CGFloat(min(a.1, b.1))
+            let rw = CGFloat(abs(a.0 - b.0) + 1), rh = CGFloat(abs(a.1 - b.1) + 1)
+            Rectangle().fill(Color.accentColor.opacity(0.15))
+                .overlay(Rectangle().strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
+                .frame(width: rw * z, height: rh * z)
+                .offset(x: x0 * z, y: y0 * z)
+                .allowsHitTesting(false)
+        }
+        if let path = doc.selectionOutline(zoom: z) {
+            TimelineView(.animation(minimumInterval: 0.12)) { t in
+                let phase = CGFloat(Int(t.date.timeIntervalSinceReferenceDate * 8) % 8)
+                ZStack {
+                    Path(path).stroke(Color.black, lineWidth: 1.5)
+                    Path(path).stroke(Color.white, style: StrokeStyle(lineWidth: 1.5, dash: [4, 4], dashPhase: phase))
+                }
+            }
+            .frame(width: w, height: h, alignment: .topLeading)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var selectionSection: some View {
+        section("선택") {
+            Text(doc.hasSelection ? "선택한 곳 안에서만 칠해져요" : "사각 선택·마술봉으로 고르면 그 안에서만 칠해져요")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("전체") { doc.commitFloating(); doc.selectAll() }.help("전체 선택 (Cmd+A)")
+                Button("해제") { doc.commitFloating(); doc.deselect() }.help("선택 해제 (Cmd+D)").disabled(!doc.hasSelection)
+                Button("반전") { doc.commitFloating(); doc.invertSelection() }.help("선택 반전 (Shift+Cmd+I)")
+            }
+            .controlSize(.small)
+            HStack {
+                Button("복사") { copy() }.help("Cmd+C")
+                Button("잘라내기") { cut() }.help("Cmd+X").disabled(!doc.hasSelection)
+                Button("붙여넣기") { paste() }.help("Cmd+V")
+            }
+            .controlSize(.small)
+            HStack {
+                Button("지우기") { doc.commitFloating(); doc.deleteSelection() }.help("선택한 곳을 투명하게 (Delete)").disabled(!doc.hasSelection)
+                Button("지금 색으로 채우기") { doc.commitFloating(); doc.fillSelection(rgba) }.disabled(!doc.hasSelection)
+            }
+            .controlSize(.small)
+            if doc.floating != nil {
+                HStack {
+                    Button("확정") { doc.commitFloating() }.buttonStyle(.borderedProminent).help("Return")
+                    Button("취소") { doc.cancelFloating() }.help("Esc")
+                }
+                .controlSize(.small)
+            }
+            if tool == .wand {
+                HStack {
+                    Text("허용 오차")
+                    Slider(value: $wandTolerance, in: 0...128, step: 1)
+                    Text("\(Int(wandTolerance))").monospacedDigit().frame(width: 28)
+                }
+                Toggle("이어진 곳만", isOn: $wandContiguous)
+            }
+            Text("Shift+끌기 더하기 · Option+끌기 빼기").font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func copy() {
+        PixelClipboard.write(doc.floating?.img ?? doc.copySelection())
+        ws.status = "복사했어요" + (doc.hasSelection ? " (선택한 곳)" : " (전체)")
+    }
+
+    private func cut() {
+        doc.commitFloating()
+        guard doc.hasSelection else { return }
+        PixelClipboard.write(doc.copySelection())
+        doc.deleteSelection()
+        ws.status = "잘라냈어요"
+    }
+
+    private func paste() {
+        guard let img = PixelClipboard.read() else { ws.status = "붙여넣을 그림이 없어요"; return }
+        doc.paste(img)
+        tool = .move
+        ws.status = "붙여넣었어요 (\(img.w)x\(img.h)) · 끌어서 옮기고 Return으로 확정"
+    }
+
+    /// 단축키 (안 보이는 버튼)
+    private var shortcuts: some View {
+        Group {
+            Button("") { copy() }.keyboardShortcut("c", modifiers: .command)
+            Button("") { cut() }.keyboardShortcut("x", modifiers: .command)
+            Button("") { paste() }.keyboardShortcut("v", modifiers: .command)
+            Button("") { doc.commitFloating(); doc.selectAll() }.keyboardShortcut("a", modifiers: .command)
+            Button("") { doc.commitFloating(); doc.deselect() }.keyboardShortcut("d", modifiers: .command)
+            Button("") { doc.commitFloating(); doc.invertSelection() }.keyboardShortcut("i", modifiers: [.command, .shift])
+            Button("") { doc.commitFloating(); doc.deleteSelection() }.keyboardShortcut(.delete, modifiers: [])
+            Button("") { doc.commitFloating() }.keyboardShortcut(.return, modifiers: [])
+            Button("") { if doc.floating != nil { doc.cancelFloating() } else { doc.deselect() } }.keyboardShortcut(.escape, modifiers: [])
+            Button("") { nudge(-1, 0) }.keyboardShortcut(.leftArrow, modifiers: [])
+            Button("") { nudge(1, 0) }.keyboardShortcut(.rightArrow, modifiers: [])
+            Button("") { nudge(0, -1) }.keyboardShortcut(.upArrow, modifiers: [])
+            Button("") { nudge(0, 1) }.keyboardShortcut(.downArrow, modifiers: [])
+        }
+        .opacity(0).frame(width: 0, height: 0).allowsHitTesting(false)
+    }
+
+    /// 방향키로 1픽셀씩 옮기기 (선택이 있으면 떼어서)
+    private func nudge(_ dx: Int, _ dy: Int) {
+        guard doc.hasSelection || doc.floating != nil else { return }
+        if doc.floating == nil { doc.lift() }
+        guard let f = doc.floating else { return }
+        doc.moveFloating(to: f.x + dx, f.y + dy)
     }
 
     // MARK: 오른쪽 패널
@@ -241,6 +419,7 @@ struct ImageEditorView: View {
                         }
                     }
                 }
+                selectionSection
                 section("붓") {
                     Stepper("크기 \(brush)px", value: $brush, in: 1...32)
                     Toggle("섞어 칠하기 (블렌드)", isOn: $blend)
@@ -252,8 +431,8 @@ struct ImageEditorView: View {
                 }
                 section("이미지") {
                     HStack {
-                        Button("좌우 반전") { doc.flip(horizontal: true) }
-                        Button("상하 반전") { doc.flip(horizontal: false) }
+                        Button("좌우 반전") { doc.flipSelection(horizontal: true) }
+                        Button("상하 반전") { doc.flipSelection(horizontal: false) }
                     }
                     Button("전체 지우기") { doc.clearAll() }
                     Button("색 조정… (색조·채도·밝기)") { showAdjust = true }
@@ -261,7 +440,11 @@ struct ImageEditorView: View {
                     Picker("맞추기", selection: $fit) {
                         ForEach(PixelImage.Fit.allCases) { Text($0.rawValue).tag($0) }
                     }
-                    Toggle("부드럽게 줄이기 (사진용)", isOn: $smooth)
+                    if fit == .original {
+                        Text("텍스처가 넣은 이미지 크기로 바뀌어요").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Toggle("부드럽게 줄이기 (사진용)", isOn: $smooth)
+                    }
                     Text("이미지를 캔버스에 끌어다 놓아도 돼요")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -314,6 +497,12 @@ struct ImageEditorView: View {
                 Text(" ").font(.caption)
             }
             Spacer()
+            if let b = doc.selectionBounds {
+                Text("선택 \(doc.selectedCount)픽셀 (\(b.w)x\(b.h))").font(.caption).foregroundStyle(.secondary)
+            }
+            if doc.floating != nil {
+                Text("떠 있는 조각: 이동 도구로 옮기고 Return 확정 · Esc 취소").font(.caption).foregroundStyle(Theme.gradient)
+            }
             if doc.dirty { Text("저장 안 됨 (Cmd+S)").font(.caption).foregroundStyle(.orange) }
         }
         .padding(.horizontal, 12).padding(.vertical, 5)
@@ -322,9 +511,25 @@ struct ImageEditorView: View {
     // MARK: 이미지 가져오기
 
     private func apply(_ cg: CGImage) {
+        let before = (doc.image.w, doc.image.h)
         if let img = PixelImage.fitted(cg, w: doc.image.w, h: doc.image.h, fit: fit, smooth: smooth) {
+            doc.commitFloating()
             doc.replace(with: img)
-            ws.status = "이미지 적용함 (\(fit.rawValue))"
+            zoom = 0 // 새 크기에 맞춰 다시 보기
+            var msg = "이미지 적용함 (\(img.w)x\(img.h)"
+            if (img.w, img.h) != before { msg += ", 원래 \(before.0)x\(before.1)에서 바뀜" }
+            msg += ")"
+            // 블록·아이템 텍스처는 정사각형(세로로 긴 건 애니메이션 프레임)이어야 게임이 제대로 읽는다
+            let rel = ws.relPath(doc.url)
+            if rel.contains("/textures/block/") || rel.contains("/textures/item/") {
+                if img.w != img.h && !(img.h > img.w && img.h % img.w == 0) {
+                    msg += " · 블록·아이템은 정사각형이어야 해요. '비율 유지'로 다시 적용하거나 잘라 주세요"
+                } else if img.h > img.w {
+                    msg += " · 세로로 긴 그림은 애니메이션(프레임 \(img.h / img.w)장)으로 읽혀요"
+                }
+            }
+            if max(img.w, img.h) > 1024 { msg += " · 아주 큰 그림이라 게임이 느려질 수 있어요" }
+            ws.status = msg
         }
     }
 

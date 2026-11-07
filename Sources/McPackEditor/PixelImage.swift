@@ -91,6 +91,7 @@ struct PixelImage: Equatable {
     // MARK: 가져온 이미지를 이 크기에 맞추기
 
     enum Fit: String, CaseIterable, Identifiable {
+        case original = "이미지 크기 그대로"
         case contain = "비율 유지 (여백 투명)"
         case cover = "비율 유지 (꽉 채우고 자르기)"
         case stretch = "늘려서 맞추기"
@@ -99,11 +100,12 @@ struct PixelImage: Equatable {
 
     /// 외부 이미지를 (w x h)에 맞춰 새 버퍼로 만든다. 사진이 늘어나지 않게 기본은 contain.
     static func fitted(_ src: CGImage, w: Int, h: Int, fit: Fit, smooth: Bool) -> PixelImage? {
+        if fit == .original { return PixelImage(cg: src) } // 지금 크기는 무시하고 이미지 크기로
         var buf = [UInt8](repeating: 0, count: w * h * 4)
         let sw = CGFloat(src.width), sh = CGFloat(src.height)
         var dest = CGRect(x: 0, y: 0, width: w, height: h)
         switch fit {
-        case .stretch: break
+        case .stretch, .original: break
         case .contain:
             let s = min(CGFloat(w) / sw, CGFloat(h) / sh)
             dest = CGRect(x: (CGFloat(w) - sw * s) / 2, y: (CGFloat(h) - sh * s) / 2, width: sw * s, height: sh * s)
