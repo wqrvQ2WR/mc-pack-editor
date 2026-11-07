@@ -172,7 +172,7 @@ struct SkinSceneView: NSViewRepresentable {
     func makeNSView(context: Context) -> InteractiveSCNView {
         let v = InteractiveSCNView(frame: .zero)
         v.scene = SCNScene()
-        v.backgroundColor = NSColor(calibratedRed: 0.78, green: 0.88, blue: 1, alpha: 1)
+        v.backgroundColor = Theme.sceneBackground(for: v)
         v.antialiasingMode = .multisampling4X
         v.distance = 70
         v.setup()
@@ -185,6 +185,7 @@ struct SkinSceneView: NSViewRepresentable {
     func updateNSView(_ v: InteractiveSCNView, context: Context) { update(v, context.coordinator) }
 
     private func update(_ v: InteractiveSCNView, _ c: Coord) {
+        v.backgroundColor = Theme.sceneBackground(for: v)
         let cg = doc.image.cgImage()
         let key = "\(slim)-\(legacy)-\(showOverlay)-\(hidden.sorted())-\(doc.image.w)x\(doc.image.h)"
         if key != c.key {
@@ -302,7 +303,7 @@ struct SkinPickerView: View {
             }
             .padding(10)
             .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white))
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(ws.inPack(rel) ? AnyShapeStyle(Theme.gradient) : AnyShapeStyle(Color.secondary.opacity(0.2)), lineWidth: 2))
         }
         .buttonStyle(.plain)

@@ -322,7 +322,7 @@ struct EnvironmentView: View {
                             Text(ws.inPack(rel) ? "팩에 있음" : "바닐라").font(.caption2).foregroundStyle(.secondary)
                         }
                         .padding(8).frame(maxWidth: .infinity)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white))
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(ws.inPack(rel) ? AnyShapeStyle(Theme.gradient) : AnyShapeStyle(Color.secondary.opacity(0.2)), lineWidth: 2))
                     }
                     .buttonStyle(.plain)

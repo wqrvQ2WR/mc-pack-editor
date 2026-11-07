@@ -539,7 +539,7 @@ struct ModelSceneView: NSViewRepresentable {
     func makeNSView(context: Context) -> InteractiveSCNView {
         let v = InteractiveSCNView(frame: .zero)
         v.scene = SCNScene()
-        v.backgroundColor = NSColor(calibratedRed: 0.8, green: 0.89, blue: 1, alpha: 1)
+        v.backgroundColor = Theme.sceneBackground(for: v)
         v.antialiasingMode = .multisampling4X
         v.distance = 48
         v.yaw = -0.6; v.pitch = 0.45
@@ -560,6 +560,7 @@ struct ModelSceneView: NSViewRepresentable {
     }
 
     private func update(_ v: InteractiveSCNView, _ c: Coord) {
+        v.backgroundColor = Theme.sceneBackground(for: v)
         // 문서 내용·선택·밝기·텍스처가 바뀌면 다시 짓기
         let snap = (try? JSONSerialization.data(withJSONObject: doc.root, options: .sortedKeys)).map { String($0.hashValue) } ?? ""
         let key = "\(snap)-\(selected ?? -1)-\(dark)-\(rev)-\(ws.assetsVersion)-\(resolved.chain.joined())"

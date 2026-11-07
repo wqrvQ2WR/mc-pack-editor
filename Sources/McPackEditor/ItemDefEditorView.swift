@@ -451,7 +451,7 @@ struct ItemPreviewScene: NSViewRepresentable {
     func makeNSView(context ctx: Context) -> InteractiveSCNView {
         let v = InteractiveSCNView(frame: .zero)
         v.scene = SCNScene()
-        v.backgroundColor = NSColor(calibratedRed: 0.86, green: 0.92, blue: 1, alpha: 1)
+        v.backgroundColor = Theme.sceneBackground(for: v)
         v.antialiasingMode = .multisampling4X
         v.distance = 46; v.yaw = -0.5; v.pitch = 0.35
         v.paintEnabled = false
@@ -465,6 +465,7 @@ struct ItemPreviewScene: NSViewRepresentable {
     func updateNSView(_ v: InteractiveSCNView, context ctx: Context) { update(v, ctx.coordinator) }
 
     private func update(_ v: InteractiveSCNView, _ c: Coord) {
+        v.backgroundColor = Theme.sceneBackground(for: v)
         let key = ids.joined(separator: "|") + "-" + context + "-\(rev)-\(ws.assetsVersion)"
         guard key != c.key else { return }
         c.key = key
@@ -521,7 +522,7 @@ struct ItemPickerView: View {
                                 if ws.inPack(rel) { Circle().fill(Theme.gradient).frame(width: 7, height: 7).help("팩에 있음") }
                             }
                             .padding(6)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.white))
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor)))
                         }
                         .buttonStyle(.plain)
                     }

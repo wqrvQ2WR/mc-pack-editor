@@ -26,6 +26,8 @@ final class Workspace: ObservableObject {
     @Published var searchResults: [Node] = []
 
     @Published var showNewLang = false
+    @Published var showNewPack = false
+    var pendingSelection: String?   // 창이 뜬 뒤에 고를 것 (실행 인자)
     @Published var lastMock: String?
     @Published var mockLang = UserDefaults.standard.string(forKey: "mockLang") ?? "ko_kr" {
         didSet { UserDefaults.standard.set(mockLang, forKey: "mockLang") }
@@ -46,7 +48,7 @@ final class Workspace: ObservableObject {
     private var modelDocs: [String: ModelDoc] = [:]
 
     var selectedURL: URL? {
-        guard let s = selection, !s.hasPrefix("mock:") else { return nil }
+        guard let s = selection, s.hasPrefix("/") else { return nil } // 목록 화면(mock:, tex:, changes)이 아니라 파일일 때만
         return URL(fileURLWithPath: s)
     }
     var selectedMock: MockKind? {
@@ -262,6 +264,23 @@ final class Workspace: ObservableObject {
             .appendingPathComponent("Library/Application Support/minecraft/resourcepacks")
         if FileManager.default.fileExists(atPath: def.path) { p.directoryURL = def }
         if p.runModal() == .OK, let u = p.url { open(u) }
+    }
+
+    /// 처음 화면으로 (저장 안 한 게 있으면 묻는다)
+    func closePack() {
+        if dirtyCount > 0 {
+            let a = NSAlert()
+            a.messageText = "저장 안 한 파일이 \(dirtyCount)개 있어요"
+            a.addButton(withTitle: "저장하고 닫기"); a.addButton(withTitle: "저장 안 하고 닫기"); a.addButton(withTitle: "취소")
+            switch a.runModal() {
+            case .alertFirstButtonReturn: saveAll()
+            case .alertSecondButtonReturn: break
+            default: return
+            }
+        }
+        root = nil; nodes = []; selection = nil; lastMock = nil
+        imageDocs.removeAll(); textDocs.removeAll(); langDocs.removeAll(); modelDocs.removeAll()
+        UserDefaults.standard.removeObject(forKey: "lastRoot")
     }
 
     func open(_ url: URL) {
