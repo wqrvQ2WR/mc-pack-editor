@@ -167,6 +167,8 @@ final class LangDoc: ObservableObject {
     @discardableResult func save() -> Bool {
         guard loadError == nil || !map.isEmpty else { return false }
         do {
+            if order.isEmpty && !FileManager.default.fileExists(atPath: url.path) { dirty = false; return true }
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try serialize().write(to: url, atomically: true, encoding: .utf8)
             dirty = false
             return true

@@ -56,7 +56,12 @@ final class ImageDoc: ObservableObject {
     }
 
     var canUndo: Bool { !undoStack.isEmpty }
-    func markDirty() { dirty = image != saved }
+    /// "바뀜"은 화면에 보이는 결과가 저장본과 다를 때만. 선택·복사·이동 도구로 누르기만 한 건 안 바뀐 것.
+    func markDirty() {
+        let now = floating == nil ? image : composite()
+        let d = now != saved
+        if d != dirty { dirty = d }
+    }
     var canRedo: Bool { !redoStack.isEmpty }
 
     func checkpoint() {
@@ -69,26 +74,38 @@ final class ImageDoc: ObservableObject {
         guard let prev = undoStack.popLast() else { return }
         redoStack.append(image)
         image = prev
-        dirty = image != saved
+        markDirty()
     }
 
     func redo() {
         guard let next = redoStack.popLast() else { return }
         undoStack.append(image)
         image = next
-        dirty = image != saved
+        markDirty()
     }
 
     func replace(with img: PixelImage) {
         checkpoint()
         if img.w != image.w || img.h != image.h { selection = nil; floating = nil } // 크기가 바뀌면 선택은 버림
         image = img
-        dirty = image != saved
+        markDirty()
     }
 
+    /// 바닐라 원본 (있으면). 저장한 그림이 이것과 똑같으면 팩에 남기지 않는다.
+    var vanilla: URL?
+    /// 마지막 저장이 "바닐라와 같아서 팩에서 뺌"이었는지
+    private(set) var lastSaveRemoved = false
+
     @discardableResult func save() -> Bool {
+        lastSaveRemoved = false
+        if let v = vanilla, let vi = PixelImage.load(v), vi == image {
+            if FileManager.default.fileExists(atPath: url.path) { try? FileManager.default.removeItem(at: url) }
+            saved = image; dirty = false; lastSaveRemoved = true
+            return true
+        }
         guard let d = image.pngData() else { return false }
         do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try d.write(to: url, options: .atomic)
             saved = image; dirty = false
             return true
@@ -155,7 +172,7 @@ final class ImageDoc: ObservableObject {
             if e2 <= dx { err += dx; y0 += sy }
         }
         image = img
-        dirty = image != saved
+        markDirty()
     }
 
     func flood(_ x: Int, _ y: Int, color: RGBA) {
@@ -180,7 +197,7 @@ final class ImageDoc: ObservableObject {
             stack.append((cx, cy + 1)); stack.append((cx, cy - 1))
         }
         image = img
-        dirty = image != saved
+        markDirty()
     }
 
     func pick(_ x: Int, _ y: Int) -> RGBA? {
@@ -201,12 +218,12 @@ final class ImageDoc: ObservableObject {
             }
         }
         image = img
-        dirty = image != saved
+        markDirty()
     }
 
     func clearAll() {
         checkpoint()
         image = PixelImage(w: image.w, h: image.h)
-        dirty = image != saved
+        markDirty()
     }
 }

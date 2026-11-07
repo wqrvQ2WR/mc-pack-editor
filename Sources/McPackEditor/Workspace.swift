@@ -33,6 +33,8 @@ final class Workspace: ObservableObject {
 
     /// 목록 페이지가 떠날 때 남겨 두는 상태 (스크롤 위치·검색어·필터)
     var pageState: [String: PageState] = [:]
+    /// 열어 보기만 한 바닐라 파일: 팩 경로 → 바닐라 원본 (저장하기 전엔 팩에 없음)
+    var virtualSources: [String: URL] = [:]
     /// 텍스처 목록 캐시 (다시 와도 바로 보이게)
     var texCache: [String: (base: String, entries: [TexEntry])] = [:]
     var changesCache: [ChangedFile]?
@@ -41,7 +43,7 @@ final class Workspace: ObservableObject {
     func goBack() {
         // 지워졌거나 없는 파일 페이지는 건너뛴다
         while let prev = backStack.popLast() {
-            if prev.hasPrefix("/") && !FileManager.default.fileExists(atPath: prev) { continue }
+            if prev.hasPrefix("/") && !FileManager.default.fileExists(atPath: prev) && virtualSources[prev] == nil { continue }
             goingBack = true
             selection = prev
             goingBack = false
@@ -147,20 +149,16 @@ final class Workspace: ObservableObject {
     }
 
     /// 팩에 없으면 바닐라에서 (짝 .mcmeta까지) 복사. 선택은 바꾸지 않는다.
+    /// 팩에 없으면 복사하지 않고 "바닐라를 읽어서 보여주고, 고쳐서 저장할 때만 팩에 쓰는" 자리로 등록한다.
+    /// 그래서 열어 보기만 한 그림은 팩에 들어가지 않는다.
     @discardableResult func ensureInPack(_ rel: String) -> URL? {
         guard let dest = packURL(rel) else { return nil }
         if !FileManager.default.fileExists(atPath: dest.path) {
             guard let v = mcVersion, let src = VanillaAssets.shared.url(v, rel) else {
                 status = vanillaReady ? "바닐라에서 못 찾음: \(rel)" : "바닐라 그림 준비 중이에요. 잠시 뒤 다시 눌러 주세요"; return nil
             }
-            try? FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? FileManager.default.copyItem(at: src, to: dest)
-            let meta = URL(fileURLWithPath: src.path + ".mcmeta")
-            if FileManager.default.fileExists(atPath: meta.path) {
-                try? FileManager.default.copyItem(at: meta, to: URL(fileURLWithPath: dest.path + ".mcmeta"))
-            }
-            reload()
-            status = "바닐라에서 복사해 왔음: \(rel)"
+            virtualSources[dest.path] = src
+            status = "바닐라를 열었어요. 고쳐서 저장(Cmd+S)해야 팩에 들어가요"
         }
         return dest
     }
@@ -170,10 +168,7 @@ final class Workspace: ObservableObject {
         guard let root else { return }
         let file = root.appendingPathComponent("assets/minecraft/lang/\(mockLang).json")
         if !FileManager.default.fileExists(atPath: file.path) {
-            try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? "{}\n".write(to: file, atomically: true, encoding: .utf8)
-            reload()
-            status = "새 언어 파일: \(relPath(file))"
+            status = "\(relPath(file))은 아직 팩에 없어요. 키를 고쳐서 저장하면 만들어져요"
         }
         pendingLangKey = key
         selection = file.path
@@ -229,7 +224,8 @@ final class Workspace: ObservableObject {
 
     func modelDoc(_ url: URL) -> ModelDoc {
         if let d = modelDocs[url.path] { return d }
-        let d = ModelDoc(url: url)
+        let d = ModelDoc(url: url, source: virtualSources[url.path])
+        d.vanilla = vanillaURL(forPack: url)
         modelDocs[url.path] = d
         return d
     }
@@ -317,7 +313,7 @@ final class Workspace: ObservableObject {
         root = url
         imageDocs.removeAll(); textDocs.removeAll(); langDocs.removeAll(); modelDocs.removeAll()
         selection = nil
-        clearHistory(); pageState.removeAll(); texCache.removeAll(); changesCache = nil
+        clearHistory(); pageState.removeAll(); texCache.removeAll(); changesCache = nil; virtualSources.removeAll()
         reload()
         UserDefaults.standard.set(url.path, forKey: "lastRoot")
         prepareVanilla()
@@ -375,28 +371,77 @@ final class Workspace: ObservableObject {
 
     // MARK: 문서 캐시
 
+    /// 팩에 파일이 있으면 그 파일, 없으면 바닐라 원본 (열어 보기만 한 것)
+    func sourceURL(_ url: URL) -> URL {
+        FileManager.default.fileExists(atPath: url.path) ? url : (virtualSources[url.path] ?? url)
+    }
+
+    /// 이 팩 경로에 해당하는 바닐라 파일
+    func vanillaURL(forPack url: URL) -> URL? {
+        guard let v = mcVersion, vanillaReady, root != nil else { return nil }
+        return VanillaAssets.shared.url(v, relPath(url))
+    }
+
     func imageDoc(_ url: URL) -> ImageDoc? {
         if let d = imageDocs[url.path] { return d }
-        guard let img = PixelImage.load(url) else { return nil }
+        guard let img = PixelImage.load(sourceURL(url)) else { return nil }
         let d = ImageDoc(url: url, image: img)
+        d.vanilla = vanillaURL(forPack: url)
         imageDocs[url.path] = d
         return d
     }
 
     func textDoc(_ url: URL) -> TextDoc {
         if let d = textDocs[url.path] { return d }
-        let d = TextDoc(url: url)
+        let d = TextDoc(url: url, source: virtualSources[url.path])
+        d.vanilla = vanillaURL(forPack: url)
         textDocs[url.path] = d
         return d
     }
 
     func saveAll() {
-        var n = 0
-        for d in imageDocs.values where d.dirty { if d.save() { n += 1 } }
+        var n = 0, removed = 0
+        for d in imageDocs.values where d.dirty {
+            let wasInPack = FileManager.default.fileExists(atPath: d.url.path)
+            guard d.save() else { continue }
+            if d.lastSaveRemoved { if wasInPack { removed += 1 } } else { n += 1; copyMetaIfNeeded(d.url) }
+        }
         for d in textDocs.values where d.dirty { if d.save() { n += 1 } }
         for d in langDocs.values where d.dirty { if d.save() { n += 1 } }
         for d in modelDocs.values where d.dirty { if d.save() { n += 1 } }
-        status = n > 0 ? "저장했음 (\(n)개)" : "저장할 변경 없음"
+        if removed > 0 || modelDocs.values.contains(where: { !FileManager.default.fileExists(atPath: $0.url.path) }) { pruneEmptyDirs() }
+        if n + removed > 0 {
+            reload(); texCache.removeAll(); changesCache = nil; assetsVersion += 1
+        }
+        var msg = n > 0 ? "저장했음 (\(n)개)" : "저장할 변경 없음"
+        if removed > 0 { msg += " · 바닐라와 같아진 \(removed)개는 팩에서 뺐어요" }
+        status = msg
+    }
+
+    /// 팩에서 파일을 빼고 남은 빈 폴더 정리 (assets 아래만)
+    func pruneEmptyDirs() {
+        guard let root else { return }
+        let assets = root.appendingPathComponent("assets")
+        func prune(_ d: URL) -> Bool {
+            let items = (try? FileManager.default.contentsOfDirectory(at: d, includingPropertiesForKeys: [.isDirectoryKey])) ?? []
+            var empty = true
+            for u in items {
+                if u.lastPathComponent == ".DS_Store" { continue }
+                if (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true, prune(u) {
+                    try? FileManager.default.removeItem(at: u)
+                } else { empty = false }
+            }
+            return empty
+        }
+        _ = prune(assets)
+    }
+
+    /// 바닐라 그림을 처음 팩에 저장할 때, 짝 .mcmeta(애니메이션·GUI 늘이기 정보)도 같이 넣는다
+    private func copyMetaIfNeeded(_ url: URL) {
+        let dest = URL(fileURLWithPath: url.path + ".mcmeta")
+        guard !FileManager.default.fileExists(atPath: dest.path), let src = vanillaURL(forPack: url) else { return }
+        let meta = URL(fileURLWithPath: src.path + ".mcmeta")
+        if FileManager.default.fileExists(atPath: meta.path) { try? FileManager.default.copyItem(at: meta, to: dest) }
     }
 
     // MARK: 파일 작업
@@ -485,12 +530,23 @@ final class Workspace: ObservableObject {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
         p.currentDirectoryURL = root
-        p.arguments = ["-r", "-X", "-q", out.path, ".", "-x", "*.DS_Store", "-x", "__MACOSX/*"]
+        // 바닐라와 똑같은 파일(복사만 하고 안 고친 것)은 zip에 넣지 않는다
+        var same: [String] = []
+        if let en = FileManager.default.enumerator(at: root.appendingPathComponent("assets"), includingPropertiesForKeys: nil) {
+            for case let u as URL in en where (try? u.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true {
+                let rel = relPath(u)
+                if changeKind(rel) == .same { same.append(rel) }
+            }
+        }
+        let excl = FileManager.default.temporaryDirectory.appendingPathComponent("mcpe-exclude-\(UUID().uuidString).txt")
+        try? same.map { "./" + $0 }.joined(separator: "\n").write(to: excl, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: excl) }
+        p.arguments = ["-r", "-X", "-q", out.path, ".", "-x", "*.DS_Store", "-x", "__MACOSX/*"] + (same.isEmpty ? [] : ["-x@" + excl.path])
         let pipe = Pipe(); p.standardError = pipe
         do {
             try p.run(); p.waitUntilExit()
             if p.terminationStatus == 0 {
-                status = "내보냈음: \(out.lastPathComponent)"
+                status = "내보냈음: \(out.lastPathComponent)" + (same.isEmpty ? "" : " · 바닐라와 같은 \(same.count)개는 뺐어요")
                 NSWorkspace.shared.activateFileViewerSelecting([out])
             } else {
                 let e = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
@@ -522,14 +578,18 @@ final class Workspace: ObservableObject {
 
 final class TextDoc: ObservableObject {
     let url: URL
-    @Published var text: String { didSet { if text != saved { dirty = true; validate() } } }
+    @Published var text: String { didSet { if text != oldValue { dirty = text != saved; validate() } } }
     @Published var dirty = false
     @Published var error: String?
     private var saved: String
 
-    init(url: URL) {
+    var vanilla: URL?
+
+    /// source: 팩에 아직 없을 때 읽을 바닐라 파일
+    init(url: URL, source: URL? = nil) {
         self.url = url
-        let t = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let from = FileManager.default.fileExists(atPath: url.path) ? url : (source ?? url)
+        let t = (try? String(contentsOf: from, encoding: .utf8)) ?? ""
         self.text = t
         self.saved = t
         validate()
@@ -548,6 +608,12 @@ final class TextDoc: ObservableObject {
 
     @discardableResult func save() -> Bool {
         do {
+            if let v = vanilla, let vt = try? String(contentsOf: v, encoding: .utf8), vt == text {
+                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                saved = text; dirty = false
+                return true
+            }
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try text.write(to: url, atomically: true, encoding: .utf8)
             saved = text; dirty = false
             return true

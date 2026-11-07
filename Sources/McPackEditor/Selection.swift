@@ -154,6 +154,7 @@ extension ImageDoc {
         let at = selectionBounds.map { ($0.x, $0.y) } ?? (0, 0)
         floating = Floating(img: img, x: at.0, y: at.1, lifted: false)
         selectFloatingRect()
+        markDirty()
     }
 
     /// 이동 시작: 선택한 곳(없으면 전체)을 그림에서 떼어 띄운다
@@ -167,6 +168,7 @@ extension ImageDoc {
         for i in 0..<(w * h) where selection?[i] ?? false { for k in 0..<4 { img.px[i * 4 + k] = 0 } }
         image = img
         floating = Floating(img: piece, x: b.x, y: b.y, lifted: true)
+        markDirty() // 떼기만 하고 안 옮겼으면 그대로라 안 바뀜
     }
 
     func moveFloating(to x: Int, _ y: Int) {
@@ -174,6 +176,7 @@ extension ImageDoc {
         f.x = x; f.y = y
         floating = f
         selectFloatingRect()
+        markDirty()
     }
 
     private func selectFloatingRect() {
@@ -201,6 +204,7 @@ extension ImageDoc {
         floating = nil
         if f.lifted { undo() }
         selection = nil
+        markDirty()
     }
 
     /// 화면에 보일 그림 (떠 있는 조각까지 합친 것)
@@ -239,6 +243,7 @@ extension ImageDoc {
         f.img = o
         floating = f
         selectFloatingRect()
+        markDirty()
     }
 
     /// 선택 테두리 (픽셀 경계선) - 큰 그림은 사각형만

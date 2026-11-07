@@ -11,17 +11,22 @@ final class ModelDoc: ObservableObject {
     @Published private(set) var loadError: String?
     private var undoStack: [Data] = []
 
-    init(url: URL) { self.url = url; load() }
+    var vanilla: URL?
+    private var source: URL?
+
+    init(url: URL, source: URL? = nil) { self.url = url; self.source = source; load() }
 
     func load() {
         loadError = nil
-        if let d = try? Data(contentsOf: url), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+        let from = FileManager.default.fileExists(atPath: url.path) ? url : (source ?? url)
+        if let d = try? Data(contentsOf: from), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
             root = o
         } else {
             root = [:]
             loadError = "모델 JSON을 읽지 못했어요. JSON 탭에서 고치세요."
         }
         dirty = false
+        savedRoot = root
         undoStack.removeAll()
     }
 
@@ -29,29 +34,40 @@ final class ModelDoc: ObservableObject {
 
     /// 바꾸기 전 상태를 남기고 고친다. coalesce면 같은 손놀림(슬라이더 끌기)은 한 번만 남긴다.
     func mutate(coalesce: String? = nil, _ f: (inout [String: Any]) -> Void) {
+        var r = root
+        f(&r)
+        if (r as NSDictionary).isEqual(to: root) { return } // 같은 값이면 아무것도 안 바뀜
         if coalesce == nil || coalesce != lastCoalesce, let snap = try? JSONSerialization.data(withJSONObject: root) {
             undoStack.append(snap)
             if undoStack.count > 100 { undoStack.removeFirst() }
         }
         lastCoalesce = coalesce
-        var r = root
-        f(&r)
         root = r
-        dirty = true
+        dirty = !(root as NSDictionary).isEqual(to: savedRoot)
     }
+    private var savedRoot: [String: Any] = [:]
     private var lastCoalesce: String?
     func endCoalesce() { lastCoalesce = nil }
 
     func undo() {
         guard let d = undoStack.popLast(), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
-        root = o; dirty = true; lastCoalesce = nil
+        root = o; dirty = !(root as NSDictionary).isEqual(to: savedRoot); lastCoalesce = nil
     }
 
     @discardableResult func save() -> Bool {
         guard loadError == nil,
               let d = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
         else { return false }
-        do { try (d + Data("\n".utf8)).write(to: url, options: .atomic); dirty = false; return true } catch { return false }
+        // 바닐라와 내용이 같으면 팩에 두지 않는다
+        if let v = vanilla, let vd = try? Data(contentsOf: v), let vo = try? JSONSerialization.jsonObject(with: vd) as? NSDictionary,
+           vo.isEqual(to: root) {
+            if FileManager.default.fileExists(atPath: url.path) { try? FileManager.default.removeItem(at: url) }
+            savedRoot = root; dirty = false; return true
+        }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try (d + Data("\n".utf8)).write(to: url, options: .atomic); savedRoot = root; dirty = false; return true
+        } catch { return false }
     }
 
     // 편의 접근
