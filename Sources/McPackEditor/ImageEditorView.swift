@@ -28,6 +28,7 @@ struct ImageEditorView: View {
     @State private var moveOrigin: (Int, Int)?     // 이동 시작 때 조각 위치
     @State private var wandTolerance: Double = 0
     @State private var wandContiguous = true
+    @State private var resizeTo: (w: Int, h: Int)?   // 오른쪽 아래 손잡이로 끄는 중인 새 크기
 
     private var effectiveZoom: CGFloat {
         if zoom > 0 { return zoom }
@@ -191,6 +192,7 @@ struct ImageEditorView: View {
                 }
                 .onEnded { _ in endStroke() }
         )
+        .overlay(alignment: .topLeading) { resizeOverlay(w: w, h: h) }
     }
 
     @ViewBuilder private func background(w: CGFloat, h: CGFloat, z: CGFloat) -> some View {
@@ -280,6 +282,79 @@ struct ImageEditorView: View {
             }
             last = p
         }
+    }
+
+    // MARK: 해상도 손잡이
+
+    /// 마크 텍스처에 맞는 크기 (2의 거듭제곱)
+    private static let niceSizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+
+    private func targetSize(dragWidth dx: CGFloat, canvasW w: CGFloat, free: Bool) -> (Int, Int) {
+        let iw = doc.image.w, ih = doc.image.h
+        let factor = max(0.05, (w + dx) / w)
+        var nw = max(1, Int((CGFloat(iw) * factor).rounded()))
+        if !free { nw = Self.niceSizes.min(by: { abs($0 - nw) < abs($1 - nw) }) ?? nw }
+        nw = min(nw, 2048)
+        let nh = max(1, Int((Double(ih) * Double(nw) / Double(iw)).rounded()))
+        return (nw, nh)
+    }
+
+    @ViewBuilder private func resizeOverlay(w: CGFloat, h: CGFloat) -> some View {
+        let z = effectiveZoom
+        // 끄는 중이면 새 크기를 같은 확대 배율로 테두리로 미리 보여줌
+        if let t = resizeTo {
+            let sw = CGFloat(t.w) / CGFloat(doc.image.w) * w, sh = CGFloat(t.h) / CGFloat(doc.image.h) * h
+            Rectangle()
+                .strokeBorder(Theme.gradient, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                .frame(width: sw, height: sh)
+                .overlay(alignment: .bottomTrailing) {
+                    Text("\(t.w) x \(t.h)" + ratioText(t.w))
+                        .font(.caption.bold()).foregroundStyle(.white)
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(Capsule().fill(Color.black.opacity(0.7)))
+                        .offset(x: -6, y: -6)
+                }
+                .allowsHitTesting(false)
+        }
+        // 손잡이
+        let hs: CGFloat = 16
+        RoundedRectangle(cornerRadius: 4)
+            .fill(Theme.gradient)
+            .overlay(Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 8, weight: .bold)).foregroundStyle(.white))
+            .frame(width: hs, height: hs)
+            .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+            .offset(x: w - hs / 2 + 4, y: h - hs / 2 + 4)
+            .help("끌어서 해상도 바꾸기 (16·32·64…에 맞춤, Option을 누르면 자유롭게)")
+            .onHover { inside in if inside { NSCursor.crosshair.push() } else { NSCursor.pop() } }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { v in
+                        let free = NSEvent.modifierFlags.contains(.option)
+                        let t = targetSize(dragWidth: max(v.translation.width, v.translation.height), canvasW: w, free: free)
+                        resizeTo = (t.0, t.1)
+                    }
+                    .onEnded { _ in
+                        if let t = resizeTo, t.w != doc.image.w || t.h != doc.image.h { resizeImage(to: t.w, t.h) }
+                        resizeTo = nil
+                    }
+            )
+        let _ = z
+    }
+
+    private func ratioText(_ nw: Int) -> String {
+        let r = Double(nw) / Double(doc.image.w)
+        if r == 1 { return "" }
+        return r > 1 ? String(format: " (%g배)", r) : String(format: " (1/%g)", 1 / r)
+    }
+
+    /// 픽셀 모양 그대로 크기 바꾸기 (실행취소 가능)
+    private func resizeImage(to nw: Int, _ nh: Int) {
+        doc.commitFloating()
+        let old = (doc.image.w, doc.image.h)
+        guard let cg = doc.image.cgImage(), let img = PixelImage.fitted(cg, w: nw, h: nh, fit: .stretch, smooth: false) else { return }
+        doc.replace(with: img)
+        zoom = 0
+        ws.status = "해상도 \(old.0)x\(old.1) → \(nw)x\(nh) (Cmd+Z로 되돌리기)"
     }
 
     // MARK: 선택

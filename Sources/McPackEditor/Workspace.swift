@@ -39,6 +39,13 @@ final class Workspace: ObservableObject {
     var texCache: [String: (base: String, entries: [TexEntry])] = [:]
     var changesCache: [ChangedFile]?
     var creativeCache: [String: [CreativeTab]] = [:]
+    @Published var batchHistory: [BatchRecord] = []
+
+    /// 파일을 밖에서 바꿨을 때 열려 있던 문서·캐시 버리기
+    func dropDocs(_ url: URL) {
+        imageDocs[url.path] = nil; textDocs[url.path] = nil; langDocs[url.path] = nil; modelDocs[url.path] = nil
+        imgCache[url.path] = nil
+    }
 
     func goBack() {
         // 지워졌거나 없는 파일 페이지는 건너뛴다
@@ -437,7 +444,7 @@ final class Workspace: ObservableObject {
     }
 
     /// 바닐라 그림을 처음 팩에 저장할 때, 짝 .mcmeta(애니메이션·GUI 늘이기 정보)도 같이 넣는다
-    private func copyMetaIfNeeded(_ url: URL) {
+    func copyMetaIfNeeded(_ url: URL) {
         let dest = URL(fileURLWithPath: url.path + ".mcmeta")
         guard !FileManager.default.fileExists(atPath: dest.path), let src = vanillaURL(forPack: url) else { return }
         let meta = URL(fileURLWithPath: src.path + ".mcmeta")

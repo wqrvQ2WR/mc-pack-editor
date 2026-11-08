@@ -188,6 +188,7 @@ struct ContentView: View {
                 if ws.query.trimmingCharacters(in: .whitespaces).isEmpty {
                     Section("팩") {
                         Label("바꾼 것 미리보기", systemImage: "sparkles.rectangle.stack").tag("changes")
+                        Label("일괄 작업", systemImage: "square.stack.3d.down.right").tag("batch")
                     }
                     Section("크리에이티브 탭") {
                         ForEach(CreativeTabs.order, id: \.self) { k in
@@ -251,7 +252,9 @@ struct ContentView: View {
     }
 
     @ViewBuilder private var detail: some View {
-        if ws.selection == "changes" {
+        if ws.selection == "batch" {
+            BatchView()
+        } else if ws.selection == "changes" {
             ChangesView().onAppear { ws.lastMock = "changes" }
         } else if let s = ws.selection, s.hasPrefix("ctab:") {
             CreativeTabView(key: String(s.dropFirst(5))).onAppear { ws.lastMock = s }
@@ -301,6 +304,7 @@ struct ContentView: View {
     private func backLabel(_ s: String) -> String {
         if s.hasPrefix("/") { return URL(fileURLWithPath: s).lastPathComponent }
         if s == "changes" { return "바꾼 것" }
+        if s == "batch" { return "일괄 작업" }
         if s.hasPrefix("ctab:") { return ws.mockText(String(s.dropFirst(5))) }
         if s.hasPrefix("tex:ns:") { return String(s.dropFirst(7)) }
         if s.hasPrefix("tex:") { return TexCategory.all.first { $0.id == String(s.dropFirst(4)) }?.label ?? "텍스처" }

@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Workspace.shared.open(URL(fileURLWithPath: p))
             if args.count > 1 {
                 let a = args[args.index(after: args.startIndex)]
-                Workspace.shared.pendingSelection = (a.hasPrefix("mock:") || a.hasPrefix("tex:") || a.hasPrefix("ctab:") || a == "changes") ? a : URL(fileURLWithPath: p).appendingPathComponent(a).path
+                Workspace.shared.pendingSelection = (a.hasPrefix("mock:") || a.hasPrefix("tex:") || a.hasPrefix("ctab:") || a == "changes" || a == "batch") ? a : URL(fileURLWithPath: p).appendingPathComponent(a).path
             }
         } else {
             Workspace.shared.reopenLast()
